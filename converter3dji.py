@@ -16,7 +16,7 @@
 
 
 ## DEPENDENCIES
-import json, hashlib, base64, os, copy, requests, glob, sys, math, datetime, re, io, urllib, logging, inspect, multiprocessing, psutil, subprocess
+import json, hashlib, base64, os, copy, requests, glob, sys, math, datetime, re, io, urllib, logging, inspect, multiprocessing, psutil, subprocess, time
 
 
 ########################################
@@ -396,6 +396,10 @@ class FileSystemXRefResolver(XRefResolverInteface):
 
 
 
+
+
+
+
 ########################################
 #
 # this class is responsible to walk throught ps and convert it
@@ -436,13 +440,13 @@ class Converter3dji:
 		self.__mPotentialRootFiles = set()
 		self.__mServerAdapter = _ServerAdapter(pParam,pLogger)
 		self.__mFilesToPush = dict()
+		self.__mGotUpdateLock = False
 	
 	def __enter__(self):
 		
 		# take update lock
-		if not self.__mServerAdapter.setProjectStatus('lockupdating'):
-			self.__mLogger.critical('Fail to take update lock')
-			raise Exception('Fail to take update lock')
+		self.__mServerAdapter.setProjectStatus('lockupdating')
+		self.__mGotUpdateLock = True
 		
 		# index is cleared in constructor so user could call methods in whatever order he want
 		if self.__mParam.clearConnectorIndex:
@@ -450,33 +454,43 @@ class Converter3dji:
 			self.__mServerAdapter.removeOldDocuments()
 		if self.__mParam.reprocessCacheErrors:
 			self.__mLogger.info('clear cache errors')
-			self.clearCacheErrors()
+			self.__clearCacheErrors()
 			
 		return self
 		
 	def __exit__(self, exc_type, exc_value, traceback):
-		if exc_type is None:
-			self.__mServerAdapter.uploadBatch()
-			self.__mServerAdapter.syncIndex()
-			
-			# release update lock
-			if not self.__mServerAdapter.setProjectStatus('idle'):
-				self.__mLogger.critical('Fail to release update lock')
-				raise Exception('Fail to release update lock')
-		else:
-			if not self.__mServerAdapter.setProjectStatus('connectorerror'):
-				self.__mLogger.critical('Fail to release update lock')
-				raise Exception('Fail to release update lock')
+		if self.__mGotUpdateLock:
+			if exc_type is None:
+				self.__finalize_connector()
+			else:
+				self.__mServerAdapter.setProjectStatus('connectorerror')
+	
+	# this method will send a build request to the server
+	def triggerBuild(self,  pBuildParamDocId, pWait):
+		# first ensure that we have finalized connector work
+		self.__finalize_connector()
+		self.__mServerAdapter.triggerBuild( pBuildParamDocId,pWait)
+	
+	def __finalize_connector(self):
+		if not self.__mGotUpdateLock:
+			return
+		
+		self.__mServerAdapter.uploadBatch()
+		self.__mServerAdapter.syncIndex()
+		
+		# release update lock
+		self.__mServerAdapter.setProjectStatus('idle')
+		self.__mGotUpdateLock = False
 	
 	# this method will remove from cache all convresults that contains errors
 	def __clearCacheErrors(self):
-		for dir in os.listdir(self.mParam.cachefolder):
-			lConvResultFile = os.path.join(self.mParam.cachefolder,dir,'convresult.json')
+		for dir in os.listdir(self.__mParam.cacheFolder):
+			lConvResultFile = os.path.join(self.__mParam.cacheFolder,dir,'convresult.json')
 			if not os.path.isfile(lConvResultFile):
 				continue
 			lConvResult = self._loadJsonFile(lConvResultFile)
 			if 'errors' in lConvResult and len(lConvResult['errors']) > 1:
-				lInfoJson = self._loadJsonFile(os.path.join(self.mParam.cachefolder,dir,'info.json'))
+				lInfoJson = self._loadJsonFile(os.path.join(self.__mParam.cacheFolder,dir,'info.json'))
 				self.__mLogger.info('force reprocess of ' + lInfoJson['filepath'])
 				os.remove(lConvResultFile)
 				
@@ -535,7 +549,7 @@ class Converter3dji:
 		lServerCap = self.__mServerAdapter.getServerCapabilities()
 		lRamCount = lServerCap['ram_quantity_bytes'] / (1024*1024)
 		lRamLimit = 2048
-		lCpuCount = max(1,min(lServerCap['cpu_count'], math.floor( (lRamCount * 0.8) / lRamLimit )))
+		lCpuCount = max(1,min(lServerCap['cpu_count'] - 2, math.floor( (lRamCount * 0.8) / lRamLimit )))
 		
 		return {
 			"id" : "com.3djuump:buildparameters",
@@ -603,6 +617,9 @@ class Converter3dji:
 				self.__mLogger.critical('input should be list or str')
 				raise Exception('input should be list or str')
 			lRootFiles = [lRootFiles]
+		if len(lRootFiles) == 0:
+			self.__mLogger.critical('need at least one root file')
+			raise Exception('need at least one root file')
 		lGenerateTopNode = pGenerateTopNode and len(lRootFiles) > 1
 		
 		if lGenerateTopNode:
@@ -881,10 +898,17 @@ class _ServerAdapter:
 		lUrl = self.__mParam.proxyApiUrl + '/api/manage/generator/project/' + self.__mParam.projectId + '/status?projectstatus=' + pStatus
 		lResponse = self.__mPool.put(lUrl,headers={'x-infinite-apikey':self.__mProxyApiKey})
 		if lResponse.status_code != 200:
-			self.__mLogger.error(lResponse.text)
-			return False
-		return True
-		
+			self.__mLogger.error('Fail to set project status ' + lResponse.text)
+			raise Exception('Fail to set project status')
+	
+	def getProjectStatus(self):
+		lUrl = self.__mParam.proxyApiUrl + '/api/manage/generator/project/' + self.__mParam.projectId + '/status'
+		lResponse = self.__mPool.get(lUrl,headers={'x-infinite-apikey':self.__mProxyApiKey})
+		if lResponse.status_code != 200:
+			self.__mLogger.error('Fail to get project status ' + lResponse.text)
+			raise Exception('Fail to get project status')
+		return lResponse.json()['projectstatus']
+	
 	def getServerCapabilities(self):
 		lUrl = self.__mParam.proxyApiUrl + '/api/manage/generator/getcapabilities'
 		lResponse = self.__mPool.get(lUrl,headers={'x-infinite-apikey':self.__mProxyApiKey})
@@ -986,3 +1010,37 @@ class _ServerAdapter:
 			self.__mLogger.critical('Invalid return code for PUT /pushfile ' + str(lResponse.status_code) + ' ' + lResponse.reason + ' ' + str(lResponse.text))
 			raise Exception('Invalid return code for PUT /pushfile ' + str(lResponse.status_code) + ' ' + lResponse.reason + ' ' + str(lResponse.text))
 		
+	# this method will send a build request to the server
+	def triggerBuild(self, pBuildParamDocId, pWait):
+		
+		self.__mLogger.info('Send build request')
+		# in future version this api should return a request id so we can monitor its progress
+		lUrl = self.__mParam.proxyApiUrl + '/api/manage/generator/project/' + self.__mParam.projectId + '/generatebuild?buildparametersdocid=' + pBuildParamDocId
+		lResponse = self.__mPool.put(lUrl,headers={'x-infinite-apikey':self.__mProxyApiKey})
+		if lResponse.status_code != 202:
+			self.__mLogger.critical('Invalid return code for PUT /pushfile ' + str(lResponse.status_code) + ' ' + lResponse.reason + ' ' + str(lResponse.text))
+			raise Exception('Invalid return code for PUT /pushfile ' + str(lResponse.status_code) + ' ' + lResponse.reason + ' ' + str(lResponse.text))
+		
+		if not pWait:
+			return
+		
+		lGotBuildLock = False
+		lStart = datetime.datetime.now()
+		self.__mLogger.info('Wait for lockbuilding')
+		# do not wait more than 10min to get build lock
+		while not lGotBuildLock:
+			if (datetime.datetime.now() - lStart).total_seconds() > 600:
+				self.__mLogger.error('Wait too long for build lock')
+				return
+			if self.getProjectStatus() == 'lockbuilding':
+				lGotBuildLock = True
+			else:
+				time.sleep(0.2)
+		
+		self.__mLogger.info('Waiting for end of build')
+		while lGotBuildLock:
+			if self.getProjectStatus() != 'lockbuilding':
+				lGotBuildLock = False
+			else:
+				time.sleep(0.2)
+		self.__mLogger.info('Build done')
