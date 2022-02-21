@@ -116,16 +116,32 @@ class PsCustomizer:
 	# this method will allow to update docs returned by the converter
 	# default behavior will regroup some properties into sub objects
 	def processConvResult(self, pDocsMap, pRootId, pSourceFilePath):
-		for k in pDocsMap:
-			lDoc = pDocsMap[k]
+		for docid in pDocsMap:
+			lDoc = pDocsMap[docid]
 			if not (lDoc['type'] in ['partmetadata','linkmetadata']) or not 'metadata' in lDoc:
 				continue
 			lMd = lDoc['metadata']
 			
+			# filter CoreTechno metadata which have default values
+			self.helperRemoveGroupOfDefaultValues(lMd,[
+				{"First Inertia Axis Xx":0.0,"First Inertia Axis Xy": 0.0,"First Inertia Axis Xz": 0.0,"Second Inertia Axis Yx": 0.0,"Second Inertia Axis Yy": 0.0,"Second Inertia Axis Yz": 0.0,"Third Inertia Axis Zx": 0.0,"Third Inertia Axis Zy": 0.0,"Third Inertia Axis Zz": 0.0},
+				{"First Inertia Moment (kg*m2)":0.0,"Second Inertia Moment (kg*m2)":0.0,"Third Inertia Moment (kg*m2)":0.0},
+				{"Inertia Matrix Ixx (kg*m2)": 0.0,"Inertia Matrix Ixy (kg*m2)": 0.0,"Inertia Matrix Iyy (kg*m2)": 0.0,"Inertia Matrix Iyz (kg*m2)": 0.0,"Inertia Matrix Izx (kg*m2)": 0.0,"Inertia Matrix Izz (kg*m2)": 0.0},
+				{"Area (m2)": 0.0},
+				{"Volume (m3)": 0.0},
+				{"Mass (kg)": 0.0},
+				{"Length (m)": 0.0},
+				{"GX (m)": 0.0,"GY (m)": 0.0,"GZ (m)": 0.0},
+				{"Xmin (m)": 0.0,"Ymin (m)": 0.0,"Zmin (m)": 0.0,"Xmax (m)": 0.0,"Ymax (m)": 0.0,"Zmax (m)": 0.0},
+				{"Original mass unit (kg)": 1.0,"Original length unit (m)": 0.001,"Original time unit (s)": 1.0}
+			])
+			
+			for k in ['CT_ID']:
+				if k in lMd:
+					del lMd[k]
+			
 			# regroup CoreTechno metadata 
-			self._regroupValues(lMd,["Area (m2)","Volume (m3)","Mass (kg)","Length (m)","GX (m)","GY (m)","GZ (m)","First Inertia Moment (kg/m2)","Second Inertia Moment (kg/m2)","Third Inertia Moment (kg/m2)","Inertia Matrix Ixx (kg/m2)","Inertia Matrix Iyy (kg/m2)","Inertia Matrix Izz (kg/m2)","Inertia Matrix Ixy (kg/m2)","Inertia Matrix Iyz (kg/m2)","Inertia Matrix Izx (kg/m2)","First Inertia Axis Xx","First Inertia Axis Xy","First Inertia Axis Xz","Second Inertia Axis Yx","Second Inertia Axis Yy","Second Inertia Axis Yz","Third Inertia Axis Zx","Third Inertia Axis Zy","Third Inertia Axis Zz","Xmin (m)","Ymin (m)","Zmin (m)","Xmax (m)","Ymax (m)","Zmax (m)"],'MassProperties')
-			self._regroupValues(lMd,["Original mass unit (kg)","Original length unit (m)","Original time unit (s)"],'OriginalUnits')
-			self._regroupValues(lMd,["Volume Density (kg/m3)","Surface Density (kg/m2)","Linear Density (kg/m)"],'Density')
+			self._regroupValues(lMd,["Volume Density (kg/m3)","Surface Density (kg/m2)","Linear Density (kg/m)","Original mass unit (kg)","Original length unit (m)","Original time unit (s)","First Inertia Moment (kg*m2)","Second Inertia Moment (kg*m2)","Third Inertia Moment (kg*m2)","Area (m2)","Volume (m3)","Mass (kg)","Length (m)","GX (m)","GY (m)","GZ (m)","First Inertia Moment (kg/m2)","Second Inertia Moment (kg/m2)","Third Inertia Moment (kg/m2)","Inertia Matrix Ixx (kg/m2)","Inertia Matrix Iyy (kg/m2)","Inertia Matrix Izz (kg/m2)","Inertia Matrix Ixy (kg/m2)","Inertia Matrix Iyz (kg/m2)","Inertia Matrix Izx (kg/m2)","First Inertia Axis Xx","First Inertia Axis Xy","First Inertia Axis Xz","Second Inertia Axis Yx","Second Inertia Axis Yy","Second Inertia Axis Yz","Third Inertia Axis Zx","Third Inertia Axis Zy","Third Inertia Axis Zz","Xmin (m)","Ymin (m)","Zmin (m)","Xmax (m)","Ymax (m)","Zmax (m)"],'PhysicalProperties')
 			
 			# look for XXXXXX::YYY
 			lSpecificMd = dict()
@@ -147,8 +163,30 @@ class PsCustomizer:
 				lMd['SpecificMd'] = []
 				for k in lSpecificMd:
 					lMd['SpecificMd'].append( {'name':k,'values':lSpecificMd[k]})
-			
-
+	
+	# this method will remove a group of metadata if they are all set to the default value
+	# pGroupOfDefaultValues is an array of group {'key1':'defaultval1','key2':'defaultval2',...}
+	def helperRemoveGroupOfDefaultValues(self, pMdObject, pGroupOfDefaultValues):
+		for grp in pGroupOfDefaultValues:
+			lDiscard = True
+			for (k,v) in grp.items():
+				if not k in pMdObject or pMdObject[k] != v:
+					lDiscard = False
+					break
+			if lDiscard:
+				for k in grp:
+					del pMdObject[k]
+					
+	# this method will rename given metadata keys
+	def helperReMapMdKeys(self,pMdObject,pMapping):
+		for (k,k2) in pMapping.items():
+			if not k in pMdObject:
+				continue
+			if k2 in pMdObject and pMdObject[k] != pMdObject[k2]:
+				self.__mLogger.warning('metadata conflict while remaping %s=%s != %s=%s' % (k,pMdObject[k],k2,pMdObject[k2]))
+			pMdObject[k2] = pMdObject[k]
+			del pMdObject[k]
+	
 	def _regroupValues(self, pMd, pKeys, pDst):
 		lGrp = dict()
 		for lKey in pKeys:
@@ -347,7 +385,12 @@ class FileSystemXRefResolver(XRefResolverInteface):
 				with open(pCacheFile,'w') as f:
 					json.dump(self.__mFilePathMap,f,sort_keys=True,indent='\t')
 		self.__mLogger.info('FileSystemXRefResolver is ready with %d files ' % (lCptr) )
-		
+
+	def __iter__(self):
+		for (k,vals) in self.__mFilePathMap.items():
+			for v in vals:
+				yield os.path.join(self.__mBaseDir,v[0])
+
 	def resolveXRef(self,pParentFilePath,pXRef):
 		lXRef = pXRef.replace('\\','/')
 		lFileName = os.path.basename(lXRef)
@@ -439,13 +482,16 @@ class Converter3dji:
 		self.__mAllProcessedFiles = set()
 		self.__mPotentialRootFiles = set()
 		self.__mServerAdapter = _ServerAdapter(pParam,pLogger)
+		self.__mAllMdKeys = dict()
 		self.__mFilesToPush = dict()
 		self.__mGotUpdateLock = False
+		self.__mProjectProperties = None
 	
 	def __enter__(self):
 		
 		# take update lock
 		self.__mServerAdapter.setProjectStatus('lockupdating')
+		self.__mProjectProperties = self.__mServerAdapter.getProjectProperties()
 		self.__mGotUpdateLock = True
 		
 		# index is cleared in constructor so user could call methods in whatever order he want
@@ -481,7 +527,16 @@ class Converter3dji:
 		# release update lock
 		self.__mServerAdapter.setProjectStatus('idle')
 		self.__mGotUpdateLock = False
-	
+		
+		lStr = 'Found metadata keys :'
+		for k in sorted(self.__mAllMdKeys.keys()):
+			lStr = lStr + '\n\t%s : %s' % (k,self.__mAllMdKeys[k])
+		if len(self.__mAllMdKeys) > 128:
+			self.__mLogger.warn('detect a huge number of metadata keys, you might have indexing issues, consider reducing it')
+			self.__mLogger.info(lStr)
+		else:
+			self.__mLogger.info(lStr)
+		
 	# this method will remove from cache all convresults that contains errors
 	def __clearCacheErrors(self):
 		for dir in os.listdir(self.__mParam.cacheFolder):
@@ -490,8 +545,7 @@ class Converter3dji:
 				continue
 			lConvResult = self._loadJsonFile(lConvResultFile)
 			if 'errors' in lConvResult and len(lConvResult['errors']) > 1:
-				lInfoJson = self._loadJsonFile(os.path.join(self.__mParam.cacheFolder,dir,'info.json'))
-				self.__mLogger.info('force reprocess of ' + lInfoJson['filepath'])
+				self.__mLogger.info('force reprocess of ' + lConvResultFile)
 				os.remove(lConvResultFile)
 				
 			
@@ -545,6 +599,9 @@ class Converter3dji:
 			scriptdoc['ts'] = max(scriptdoc['ts'],self._getFileTs(filepath))
 		self.__mServerAdapter.addDocument(scriptdoc)
 	
+	def getProjectProperties(self):
+		return self.__mProjectProperties
+
 	def getDefaultBuildParameters(self):
 		lServerCap = self.__mServerAdapter.getServerCapabilities()
 		lRamCount = lServerCap['ram_quantity_bytes'] / (1024*1024)
@@ -608,7 +665,6 @@ class Converter3dji:
 	# this method will return list of generated root ids 
 	def convert(self,pRootFiles, pGenerateTopNode = True):
 		self.__mLogger.info('Start processing')
-		lRootIds = []
 		self.mFilesToPush = dict()
 		
 		lRootFiles = pRootFiles
@@ -622,30 +678,17 @@ class Converter3dji:
 			raise Exception('need at least one root file')
 		lGenerateTopNode = pGenerateTopNode and len(lRootFiles) > 1
 		
-		if lGenerateTopNode:
-			lRootIds.append('root')
-			lRootDoc = {
-				'id':'root',
-				'type':'structure',
-				'partmdid' : 'partmd_root',
-				'children' : {}
-				}
-			for r in lRootFiles:
-				(lChildId,_,_,_) = self._computeFileInfo(r)
-				lRootDoc['children']['root_' + lChildId] = { 'ref':lChildId }
-			self.__mServerAdapter.addDocument(lRootDoc)
 		self.__mLogger.info('Convert %i root file%s, %s top node' % (len(lRootFiles), 's' if len(lRootFiles) > 1 else '', 'with' if lGenerateTopNode else 'without'))
 		
+		self.__mAllProcessedFiles = set()
 		self.mRemainingFilesToProcess = dict()
 		for r in lRootFiles:
-			self.__mRemainingFilesToProcess[r] = 0.
-			self.__mPotentialRootFiles.add(r)
-			if not lGenerateTopNode:
-				(lRootId,_,_,_) = self._computeFileInfo(r)
-				lRootIds.append(lRootId)
-		
+			lRootFile = os.path.realpath(r)
+			self.__mRemainingFilesToProcess[lRootFile] = 0.
+			self.__mAllProcessedFiles.add(lRootFile)
+			self.__mPotentialRootFiles.add(lRootFile)
+			
 
-		self.__mAllProcessedFiles = set()
 		while len(self.__mRemainingFilesToProcess) > 0:
 			lToConvert = []
 			# iterate over self.mRemainingFilesToProcess until it is not empty files
@@ -666,13 +709,30 @@ class Converter3dji:
 					(lFileHash,lCacheFolder,lConvResultFile,lInfoJsonFile) = self._computeFileInfo(lBatchEntry)
 					if not os.path.isdir(lCacheFolder):
 						os.makedirs(lCacheFolder)
+
 					lInfoJson = self._loadJsonFile(lInfoJsonFile)
+					lNeedToReprocess = False
 					if( 	(not 'etag' in lInfoJson) or 
 							(lInfoJson['etag'] != lEtag) or 
 							(not 'filepath' in lInfoJson) or 
 							(lInfoJson['filepath'] != lBatchEntry) or
 							(not os.path.isfile(lConvResultFile))
 						):
+						lNeedToReprocess = True
+					else:
+						lConvResult = self._loadJsonFile(lConvResultFile)
+						if len(lConvResult) == 0:
+							self.__mLogger.warn('need to reprocess %s, convresult is empty' % (lConvResultFile))
+							# if previous conversion was halted some convresult files could be corrupted
+							lNeedToReprocess = True
+						else:
+							if self.__mParam.reprocessDocFromCache :
+								self._callPsCustomizer(lConvResult,lFileHash,lBatchEntry,lConvResult['infos']['ts'],True)
+								with open(lConvResultFile,'w') as of:
+									json.dump(lConvResult,of)
+							self._analyzeconvresult(lBatchEntry,lFileHash,lCacheFolder,lConvResult)
+					
+					if lNeedToReprocess:
 						# clear cache
 						for fc in os.listdir(lCacheFolder):
 							file_path = os.path.join(lCacheFolder, fc)
@@ -689,13 +749,7 @@ class Converter3dji:
 							},**self.__mCustomizer.computeExtractSettings(lBatchEntry)})
 						if self.__mParam.copyBeforeLoad is not None:
 							lToConvert[-1]['copybeforeload'] = os.path.abspath(self.__mParam.cacheFolder)
-					else:
-						lConvResult = self._loadJsonFile(lConvResultFile)
-						if self.__mParam.reprocessDocFromCache :
-							self._callPsCustomizer(lConvResult,lFileHash,lBatchEntry,lConvResult['infos']['ts'],True)
-							with open(lConvResultFile,'w') as of:
-								json.dump(lConvResult,of)
-						self._analyzeconvresult(lBatchEntry,lFileHash,lCacheFolder,lConvResult)
+					
 					
 			self.__mLogger.info('Analyze %i files, %i are outdated ' % (lAnalyzedFileCounter,len(lToConvert)))
 			
@@ -750,7 +804,6 @@ class Converter3dji:
 					json.dump(lConvResult,of)
 
 				self._analyzeconvresult(c['file'],lFileHash,lCacheFolder,lConvResult)
-				
 				lInfoJson = {
 						'etag': self._getFileTs(c['file']),
 						'filepath' : c['file'],
@@ -762,8 +815,27 @@ class Converter3dji:
 		
 		self.__mServerAdapter.pushGeometryFiles(self.mFilesToPush)
 		
+		self.__mLogger.debug('Root files : ' + json.dumps(list(self.__mPotentialRootFiles)))
+		
+		lRootIds = []
+		if lGenerateTopNode:
+			lRootIds.append('root')
+			lRootDoc = {
+				'id':'root',
+				'type':'structure',
+				'partmdid' : 'partmd_root',
+				'children' : {}
+				}
+			for r in self.__mPotentialRootFiles:
+				(lChildId,_,_,_) = self._computeFileInfo(r)
+				lRootDoc['children']['root_' + lChildId] = { 'ref':lChildId }
+			self.__mServerAdapter.addDocument(lRootDoc)
+		else:
+			for r in self.__mPotentialRootFiles:
+				(lRootId,_,_,_) = self._computeFileInfo(r)
+				lRootIds.append(lRootId)
+		self.__mLogger.debug('Rood documents : ' + json.dumps(lRootIds))
 		return lRootIds
-
 	
 	def _callPsCustomizer(self, pConvResult, pRootId, pSourceFilePath, pTs, pIncrementTs=False):
 		lIndexedDocs = dict()
@@ -837,8 +909,9 @@ class Converter3dji:
 						del lChild['psconverter:xref']
 						if lXRef is None:
 							continue
-						(lChild['ref'],_,_,_) = self._computeFileInfo(lXRef[0])
-						lXRefs[lXRef[0]] = lXRef[1]
+						lXRefRealPath = os.path.realpath(lXRef[0])
+						(lChild['ref'],_,_,_) = self._computeFileInfo(lXRefRealPath)
+						lXRefs[lXRefRealPath] = lXRef[1]
 					lLinkId = c
 					if 'psconverter:xrefmetadata' in lChild:
 						lLinkMdDoc = {}
@@ -861,9 +934,13 @@ class Converter3dji:
 			elif lDoc['type'] == 'geometry' and lDoc['geometrysettings']['sourcer'] == 'converter3dji_pushedfiles':
 				lFileName = lDoc['geometrysettings']['path']
 				if lFileName in self.mFilesToPush:
-					raise Exception('got a geometry file name conflict')
+					raise Exception('got a geometry file name conflict ' + lFileName)
 				self.mFilesToPush[lFileName] = os.path.join(pCacheFolder,lFileName)
-			
+			elif lDoc['type'] in ['partmetadata','linkmetadata','instancemetadata'] and 'metadata' in lDoc:
+				for k in lDoc['metadata']:
+					if not k in self.__mAllMdKeys:
+						self.__mAllMdKeys[k] = set()
+					self.__mAllMdKeys[k].add(type(lDoc['metadata'][k]))
 			self.__mServerAdapter.addDocument(lFinalDoc)
 		lXRefsSet = set(lXRefs.keys())
 		for k in ( lXRefsSet - self.__mAllProcessedFiles):
@@ -894,6 +971,14 @@ class _ServerAdapter:
 			self.__mPool.verify = False
 			requests.packages.urllib3.disable_warnings(requests.packages.urllib3.exceptions.InsecureRequestWarning)
 	
+	def getProjectProperties(self):
+		lUrl = self.__mParam.proxyApiUrl + '/api/manage/generator/project/' + self.__mParam.projectId
+		lResponse = self.__mPool.get(lUrl,headers={'x-infinite-apikey':self.__mProxyApiKey})
+		if lResponse.status_code != 200:
+			self.__mLogger.error('Fail to get project properties ' + lResponse.text)
+			raise Exception('Fail to get project properties')
+		return lResponse.json()
+
 	def setProjectStatus(self, pStatus):
 		lUrl = self.__mParam.proxyApiUrl + '/api/manage/generator/project/' + self.__mParam.projectId + '/status?projectstatus=' + pStatus
 		lResponse = self.__mPool.put(lUrl,headers={'x-infinite-apikey':self.__mProxyApiKey})
