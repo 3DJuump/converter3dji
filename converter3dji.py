@@ -44,6 +44,8 @@ class Converter3djiSettings:
 		self.verifySSL = True
 		# should we recall PsCustomizer on doc that are in cache
 		self.reprocessDocFromCache = False
+		# how many time we should wait to get project lock before returning an error
+		self.waitForProjectLockTimeOutSec = 30
 	
 	# load settings from a dict
 	def loadFromJson(self, pJson):
@@ -85,6 +87,8 @@ class Converter3djiSettings:
 			raise Exception('invalid copyBeforeLoad')
 		if not isinstance(self.reprocessDocFromCache, bool):
 			raise Exception('invalid reprocessDocFromCache')
+		if not (isinstance(self.waitForProjectLockTimeOutSec, int) or isinstance(self.waitForProjectLockTimeOutSec, float)):
+			raise Exception('invalid waitForProjectLockTimeOutSec')
 		if not isinstance(self.verifySSL, bool):
 			raise Exception('invalid verifySSL')
 		if not self.proxyApiUrl.endswith('/proxy'):
@@ -490,7 +494,7 @@ class Converter3dji:
 	def __enter__(self):
 		
 		# take update lock
-		self.__mServerAdapter.setProjectStatus('lockupdating')
+		self.__mServerAdapter.setProjectStatus('lockupdating', self.__mParam.waitForProjectLockTimeOutSec)
 		self.__mProjectProperties = self.__mServerAdapter.getProjectProperties()
 		self.__mGotUpdateLock = True
 		
@@ -509,7 +513,7 @@ class Converter3dji:
 			if exc_type is None:
 				self.__finalize_connector()
 			else:
-				self.__mServerAdapter.setProjectStatus('connectorerror')
+				self.__mServerAdapter.setProjectStatus('connectorerror',None)
 	
 	# this method will send a build request to the server
 	def triggerBuild(self,  pBuildParamDocId, pWait):
@@ -525,7 +529,7 @@ class Converter3dji:
 		self.__mServerAdapter.syncIndex()
 		
 		# release update lock
-		self.__mServerAdapter.setProjectStatus('idle')
+		self.__mServerAdapter.setProjectStatus('idle',None)
 		self.__mGotUpdateLock = False
 		
 		lStr = 'Found metadata keys :'
@@ -566,7 +570,10 @@ class Converter3dji:
 				self.addDocument(j,ts)
 		elif os.path.isdir(pInput):
 			for file in os.listdir(pInput):
-				self.addDocument(os.path.join(pInput,file),ts)
+				if file.endswith('.json'):
+					self.addDocument(os.path.join(pInput,file),ts)
+				else:
+					self.__mLogger.debug('ignore non json file ' + file)
 		elif os.path.isfile(pInput) and pInput.endswith('.json'):
 			try:
 				with open(pInput,'r',encoding='utf-8') as f:
@@ -889,10 +896,10 @@ class Converter3dji:
 	def _analyzeconvresult(self, pParentFilePath,pParentHash, pCacheFolder, pConvResult):
 		if 'errors' in pConvResult:
 			for e in pConvResult['errors']:
-				self.__mLogger.error('error %s => %s' % (pParentHash,pConvResult['errors']))
+				self.__mLogger.error('error %s (%s) => %s' % (pParentFilePath,pParentHash,pConvResult['errors']))
 		if 'warnings' in pConvResult:
 			for w in pConvResult['warnings']:
-				self.__mLogger.warning('warnings %s => %s' % (pParentHash,pConvResult['warnings']))
+				self.__mLogger.warning('warnings %s (%s) => %s' % (pParentFilePath,pParentHash,pConvResult['warnings']))
 		
 		# look for xrefs and rub files
 		lXRefs = dict()
@@ -907,11 +914,13 @@ class Converter3dji:
 					if 'psconverter:xref' in lChild:
 						lXRef = self.__mXRefSolver.resolveXRef(pParentFilePath,lChild['psconverter:xref'])
 						del lChild['psconverter:xref']
-						if lXRef is None:
-							continue
-						lXRefRealPath = os.path.realpath(lXRef[0])
-						(lChild['ref'],_,_,_) = self._computeFileInfo(lXRefRealPath)
-						lXRefs[lXRefRealPath] = lXRef[1]
+						if not lXRef is None:
+							lXRefRealPath = os.path.realpath(lXRef[0])
+							(lChild['ref'],_,_,_) = self._computeFileInfo(lXRefRealPath)
+							lXRefs[lXRefRealPath] = lXRef[1]
+						else:
+							# link to a missing structure document to generate an error
+							lChild['ref'] = 'unresolved_xref_dummy_struct_doc'
 					lLinkId = c
 					if 'psconverter:xrefmetadata' in lChild:
 						lLinkMdDoc = {}
@@ -979,12 +988,24 @@ class _ServerAdapter:
 			raise Exception('Fail to get project properties')
 		return lResponse.json()
 
-	def setProjectStatus(self, pStatus):
-		lUrl = self.__mParam.proxyApiUrl + '/api/manage/generator/project/' + self.__mParam.projectId + '/status?projectstatus=' + pStatus
-		lResponse = self.__mPool.put(lUrl,headers={'x-infinite-apikey':self.__mProxyApiKey})
-		if lResponse.status_code != 200:
-			self.__mLogger.error('Fail to set project status ' + lResponse.text)
-			raise Exception('Fail to set project status')
+	def setProjectStatus(self, pStatus, pTimeOutSec):
+		lStart = time.time()
+		lFirstTry = True
+		while True:
+			lUrl = self.__mParam.proxyApiUrl + '/api/manage/generator/project/' + self.__mParam.projectId + '/status?projectstatus=' + pStatus
+			lResponse = self.__mPool.put(lUrl,headers={'x-infinite-apikey':self.__mProxyApiKey})
+			if lResponse.status_code == 200:
+				return True
+			elif not pTimeOutSec is None and lResponse.status_code == 409:
+				if time.time() - lStart > pTimeOutSec:
+					raise Exception('Timeout while trying to get project lock')
+				if lFirstTry:
+					self.__mLogger.info('Project is not idle, will wait at most %s seconds to get the update lock' % (pTimeOutSec))
+				lFirstTry = False
+				continue
+			else:
+				self.__mLogger.error('Fail to set project status ' + lResponse.text)
+				raise Exception('Fail to set project status')
 	
 	def getProjectStatus(self):
 		lUrl = self.__mParam.proxyApiUrl + '/api/manage/generator/project/' + self.__mParam.projectId + '/status'
