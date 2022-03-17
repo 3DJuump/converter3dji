@@ -320,9 +320,6 @@ class PsConverter(ConverterInterface):
 				'workercount':self.__mParams.workerCount,
 				'maxramperworkermb':self.__mParams.maxRamPerWorkerMB,
 				'maxtimeperworkersec':self.__mParams.maxTimePerWorkerSec,
-				'retrymaxramperworkermb':self.__mParams.maxRamPerWorkerMB * self.__mParams.workerCount,
-				'retryworkercount':1 if self.__mParams.workerCount > 1 else 0,
-				'retrymaxtimeperworkersec':self.__mParams.maxTimePerWorkerSec,
 				'directoryurl':self.__mParams.directoryApiUrl,
 				'verify_ssl_peer':self.__m3DJIParams.verifySSL,
 				'http_proxy': self.__m3DJIParams.httpProxy
