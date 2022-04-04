@@ -461,7 +461,7 @@ class Converter3dji:
 			raise Exception('Invalid pParam')
 		if not isinstance(pCustomizer, PsCustomizer):
 			raise Exception('Invalid pCustomizer')
-		if not isinstance(pXRefSolver, XRefResolverInteface):
+		if not pXRefSolver is None and not isinstance(pXRefSolver, XRefResolverInteface):
 			raise Exception('Invalid pXRefSolver')
 		
 		
@@ -668,9 +668,17 @@ class Converter3dji:
 			}
 		}
 	
+	# deprecated method use convertFiles
+	def convert(self,pRootFiles, pGenerateTopNode = True):
+		lRes = self.convertFiles(pRootFiles,pGenerateTopNode)
+		lRes2 = []
+		for k in lRes:
+			lRes2.append(lRes[k])
+		return lRes2
+
 	# call this method to process product structure
 	# this method will return list of generated root ids 
-	def convert(self,pRootFiles, pGenerateTopNode = True):
+	def convertFiles(self,pRootFiles, pGenerateTopNode = True):
 		self.__mLogger.info('Start processing')
 		self.mFilesToPush = dict()
 		
@@ -754,7 +762,7 @@ class Converter3dji:
 								'convresult':os.path.abspath(lConvResultFile),
 								'logfile':os.path.abspath(os.path.join(os.path.dirname(lConvResultFile),'log.txt'))
 							},**self.__mCustomizer.computeExtractSettings(lBatchEntry)})
-						if self.__mParam.copyBeforeLoad is not None:
+						if self.__mParam.copyBeforeLoad is not None and self.__mParam.copyBeforeLoad:
 							lToConvert[-1]['copybeforeload'] = os.path.abspath(self.__mParam.cacheFolder)
 					
 					
@@ -824,9 +832,9 @@ class Converter3dji:
 		
 		self.__mLogger.debug('Root files : ' + json.dumps(list(self.__mPotentialRootFiles)))
 		
-		lRootIds = []
+		lRootIds = {}
 		if lGenerateTopNode:
-			lRootIds.append('root')
+			lRootIds[''] = 'root'
 			lRootDoc = {
 				'id':'root',
 				'type':'structure',
@@ -840,7 +848,7 @@ class Converter3dji:
 		else:
 			for r in self.__mPotentialRootFiles:
 				(lRootId,_,_,_) = self._computeFileInfo(r)
-				lRootIds.append(lRootId)
+				lRootIds[r] = lRootId
 		self.__mLogger.debug('Rood documents : ' + json.dumps(lRootIds))
 		return lRootIds
 	
@@ -896,10 +904,10 @@ class Converter3dji:
 	def _analyzeconvresult(self, pParentFilePath,pParentHash, pCacheFolder, pConvResult):
 		if 'errors' in pConvResult:
 			for e in pConvResult['errors']:
-				self.__mLogger.error('error %s (%s) => %s' % (pParentFilePath,pParentHash,pConvResult['errors']))
+				self.__mLogger.error('error %s (%s) => %s' % (pParentFilePath,pParentHash,e))
 		if 'warnings' in pConvResult:
 			for w in pConvResult['warnings']:
-				self.__mLogger.warning('warnings %s (%s) => %s' % (pParentFilePath,pParentHash,pConvResult['warnings']))
+				self.__mLogger.warning('warnings %s (%s) => %s' % (pParentFilePath,pParentHash,w))
 		
 		# look for xrefs and rub files
 		lXRefs = dict()
@@ -912,7 +920,9 @@ class Converter3dji:
 				for c in lDoc['children']:
 					lChild = copy.deepcopy(lDoc['children'][c])
 					if 'psconverter:xref' in lChild:
-						lXRef = self.__mXRefSolver.resolveXRef(pParentFilePath,lChild['psconverter:xref'])
+						lXRef = None
+						if not self.__mXRefSolver is None:
+							lXRef = self.__mXRefSolver.resolveXRef(pParentFilePath,lChild['psconverter:xref'])
 						del lChild['psconverter:xref']
 						if not lXRef is None:
 							lXRefRealPath = os.path.realpath(lXRef[0])
