@@ -182,12 +182,12 @@ class PsCustomizer:
 					del pMdObject[k]
 					
 	# this method will rename given metadata keys
-	def helperReMapMdKeys(self,pMdObject,pMapping):
+	def helperReMapMdKeys(self,pMdObject,pMapping, pLogInfo = None):
 		for (k,k2) in pMapping.items():
 			if not k in pMdObject:
 				continue
 			if k2 in pMdObject and pMdObject[k] != pMdObject[k2]:
-				self.__mLogger.warning('metadata conflict while remaping %s=%s != %s=%s' % (k,pMdObject[k],k2,pMdObject[k2]))
+				self.__mLogger.warning('metadata conflict while remaping %s=%s != %s=%s' % (k,pMdObject[k],k2,pMdObject[k2]) + pLogInfo if not pLogInfo is None else '')
 			pMdObject[k2] = pMdObject[k]
 			del pMdObject[k]
 	
@@ -533,13 +533,39 @@ class Converter3dji:
 		self.__mGotUpdateLock = False
 		
 		lStr = 'Found metadata keys :'
+		lProposedMapping = {
+			"metadatamapping":{
+				"dynamic":False,
+				"properties":{
+
+				}
+			}
+		}
 		for k in sorted(self.__mAllMdKeys.keys()):
+			lMappingType = "text"
+			if len(self.__mAllMdKeys[k]) > 1:
+				self.__mLogger.warn('detect several types for metadata %s : %s' % (k,self.__mAllMdKeys[k]))
+			elif list(self.__mAllMdKeys[k])[0] is str:
+				lMappingType = "text"
+			elif list(self.__mAllMdKeys[k])[0] is int:
+				lMappingType = "integer"
+			elif list(self.__mAllMdKeys[k])[0] is float:
+				lMappingType = "double"
+			elif list(self.__mAllMdKeys[k])[0] is list:
+				lMappingType = "nested"
+			elif list(self.__mAllMdKeys[k])[0] is dict:
+				lMappingType = "object"
+			else:
+				raise Exception('Unhandled mapping type %s' % (self.__mAllMdKeys[k]))
+
+			lProposedMapping["metadatamapping"]["properties"][k] = {"type":lMappingType}
 			lStr = lStr + '\n\t%s : %s' % (k,self.__mAllMdKeys[k])
+		lStr = lStr + "\nproposed mapping : " + json.dumps(lProposedMapping)
 		if len(self.__mAllMdKeys) > 128:
 			self.__mLogger.warn('detect a huge number of metadata keys, you might have indexing issues, consider reducing it')
-			self.__mLogger.info(lStr)
-		else:
-			self.__mLogger.info(lStr)
+
+		self.__mLogger.info(lStr)
+		
 		
 	# this method will remove from cache all convresults that contains errors
 	def __clearCacheErrors(self):
@@ -727,24 +753,29 @@ class Converter3dji:
 
 					lInfoJson = self._loadJsonFile(lInfoJsonFile)
 					lNeedToReprocess = False
-					if( 	(not 'etag' in lInfoJson) or 
-							(lInfoJson['etag'] != lEtag) or 
-							(not 'filepath' in lInfoJson) or 
-							(lInfoJson['filepath'] != lBatchEntry) or
-							(not os.path.isfile(lConvResultFile))
-						):
+					if ( 	(not 'etag' in lInfoJson) or 
+							(lInfoJson['etag'] != lEtag) ):
+						self.__mLogger.info('need to reprocess %s, etag mismatch' % (lConvResultFile))
 						lNeedToReprocess = True
+					elif( 	(not 'filepath' in lInfoJson) or 
+							(lInfoJson['filepath'] != lBatchEntry)
+						):
+						self.__mLogger.info('need to reprocess %s, filepath mismatch ' % (lConvResultFile))
+						lNeedToReprocess = True
+					elif ( (not os.path.isfile(lConvResultFile))):
+						self.__mLogger.warning('need to reprocess %s, etag convresult is missing' % (lConvResultFile))
+						lNeedToReprocess = True 
 					else:
 						lConvResult = self._loadJsonFile(lConvResultFile)
 						if len(lConvResult) == 0:
-							self.__mLogger.warn('need to reprocess %s, convresult is empty' % (lConvResultFile))
+							self.__mLogger.warning('need to reprocess %s, convresult is empty' % (lConvResultFile))
 							# if previous conversion was halted some convresult files could be corrupted
 							lNeedToReprocess = True
 						else:
 							if self.__mParam.reprocessDocFromCache :
 								self._callPsCustomizer(lConvResult,lFileHash,lBatchEntry,lConvResult['infos']['ts'],True)
 								with open(lConvResultFile,'w') as of:
-									json.dump(lConvResult,of)
+									json.dump(lConvResult,of,indent=4)
 							self._analyzeconvresult(lBatchEntry,lFileHash,lCacheFolder,lConvResult)
 					
 					if lNeedToReprocess:
@@ -816,7 +847,7 @@ class Converter3dji:
 				
 				# re-save convresult it might have been modified by ps converter
 				with open(lConvResultFile,'w') as of:
-					json.dump(lConvResult,of)
+					json.dump(lConvResult,of,indent=4)
 
 				self._analyzeconvresult(c['file'],lFileHash,lCacheFolder,lConvResult)
 				lInfoJson = {
@@ -825,7 +856,7 @@ class Converter3dji:
 						'rootid':lFileHash
 					}
 				with open(lInfoJsonFile,'w') as f:
-					json.dump(lInfoJson,f,sort_keys=True)
+					json.dump(lInfoJson,f,sort_keys=True,indent=4)
 				
 		
 		self.__mServerAdapter.pushGeometryFiles(self.mFilesToPush)
@@ -860,7 +891,9 @@ class Converter3dji:
 		if not pRootId in lIndexedDocs:
 			if not 'errors' in pConvResult:
 				pConvResult['errors'] = []
-			pConvResult['errors'].append('root document is missing from converter result')
+			lError = 'root document is missing from converter result'
+			if not lError in pConvResult['errors']:
+				pConvResult['errors'].append(lError)
 			return
 		
 		self.__mCustomizer.processConvResult(lIndexedDocs,pRootId,pSourceFilePath)
@@ -868,7 +901,9 @@ class Converter3dji:
 		if not pRootId in lIndexedDocs:
 			if not 'errors' in pConvResult:
 				pConvResult['errors'] = []
-			pConvResult['errors'].append('root document was removed by ps customizer')
+			lError = 'root document was removed by ps customizer'
+			if not lError in pConvResult['errors']:
+				pConvResult['errors'].append(lError)
 			return
 			
 		pConvResult['docs']=[]
@@ -976,6 +1011,7 @@ class _ServerAdapter:
 	def __init__(self, pParams, pLogger):
 		self.__mLogger = pLogger
 		self.__mCurrentEsBatch = io.BytesIO()
+		self.__mCurrentEsBatchDocCount = 0
 		self.__mParam = pParams
 		self.__mUrlBase = self.__mParam.proxyApiUrl + '/elastic/' + self.__mParam.projectId + '_connector'
 		
@@ -1040,32 +1076,37 @@ class _ServerAdapter:
 			del pDoc['ts']
 		lToAppend = lToAppend + json.dumps(pDoc).encode('utf8') + b'\n'
 		
-		if self.__mCurrentEsBatch.getbuffer().nbytes + len(lToAppend) > 80*1024*1024:
+		if ( (self.__mCurrentEsBatch.getbuffer().nbytes + len(lToAppend)) > 80*1024*1024 or 
+			self.__mCurrentEsBatchDocCount >= 10000
+			):
 			self.uploadBatch()
 		self.__mCurrentEsBatch.write(lToAppend)
+		self.__mCurrentEsBatchDocCount = self.__mCurrentEsBatchDocCount + 1
 	
 	def uploadBatch(self):
 		if self.__mCurrentEsBatch.getbuffer().nbytes == 0:
 			return
+		self.__mLogger.debug('Upload %s document(s) for %sB to es index' % (self.__mCurrentEsBatchDocCount,self.__mCurrentEsBatch.getbuffer().nbytes))
 		lToSend = self.__mCurrentEsBatch.getvalue()
 		lResponse = self.__mPool.post(self.__mUrlBase + '/_doc/_bulk', data=lToSend, headers={"Content-Type": "application/x-ndjson"})
 		if lResponse.status_code != 200:
-			with open(self.__mParam.cachefolder + '/eserror.log','w') as f:
+			with open(self.__mParam.cacheFolder + '/eserror.log','w') as f:
 				f.write('Invalid return code for _bulk\n' + str(lResponse.status_code) + '\n' + lResponse.reason + '\n' + str(lResponse.text)+ '\n' + lToSend.decode('utf8'))
 			self.__mLogger.critical('Es error, please check eserror.log')
 			raise Exception('Es error, please check eserror.log');
 		if lResponse.json()['errors']:
-			with open(self.__mParam.cachefolder + '/eserror.log','w') as f:
+			with open(self.__mParam.cacheFolder + '/eserror.log','w') as f:
 				f.write('Insertion error\n')
 				for i in lResponse.json()['items']:
 					if 'index' in i and 'error' in i['index']:
 						f.write(json.dumps(i['index']) + '\n')
-			with open(self.__mParam.cachefolder + '/lastesbatch.txt','wb') as f:
+			with open(self.__mParam.cacheFolder + '/lastesbatch.txt','wb') as f:
 				f.write(lToSend)
 			self.__mLogger.critical('Es error, please check eserror.log')
 			raise Exception('Es error, please check eserror.log')
-		self.__mLogger.info('Insert %i docs in the index'%(len(lResponse.json()['items'])))
+		self.__mLogger.debug('Inserted %i docs in the index'%(len(lResponse.json()['items'])))
 		self.__mCurrentEsBatch = io.BytesIO()
+		self.__mCurrentEsBatchDocCount = 0
 	
 	
 	def syncIndex(self):
