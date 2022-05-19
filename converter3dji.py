@@ -108,18 +108,27 @@ class PsCustomizer:
 	# use this method to customize extract settings per file
 	# check PsConverter documentation for in depth description
 	def computeExtractSettings(self, pFileName):
+		lExt = os.path.splitext(pFileName)[1].lower()
+		lSubPartLevel = ['root']
+		if lExt in ['.fbx','.vrml','.gltf','.obj','.wrl','.wrz']:
+			lSubPartLevel = ['geometry']
+		elif lExt in ['.catpart','.cgr','.jt']:
+			lSubPartLevel = ['assembly','component','geometryset']
 		return {
 				'extractannot':True,
 				'extractannotoriginaldata':False,
 				'extractmetadata':True,
 				'extractlinkmetadata':True,
 				'extracthiddenobjects':pFileName.lower().endswith('catproduct'),
-				'subpartlevel':['root']
+				'removeinstanciationandbakexforms':False,
+				'subpartlevel':lSubPartLevel
 				}
 
 	# this method will allow to update docs returned by the converter
 	# default behavior will regroup some properties into sub objects
 	def processConvResult(self, pDocsMap, pRootId, pSourceFilePath):
+		self.helperHandleBadXForm(pDocsMap)
+		
 		for docid in pDocsMap:
 			lDoc = pDocsMap[docid]
 			if not (lDoc['type'] in ['partmetadata','linkmetadata']) or not 'metadata' in lDoc:
@@ -168,6 +177,43 @@ class PsCustomizer:
 				for k in lSpecificMd:
 					lMd['SpecificMd'].append( {'name':k,'values':lSpecificMd[k]})
 	
+	def helperHandleBadXForm(self, pDocsMap):
+		import uuid
+		lNewLinkMdDocs = {}
+		lTs = round(datetime.datetime.now().timestamp())
+		for docid in pDocsMap:
+			lDoc = pDocsMap[docid]
+			if not (lDoc['type'] in ['structure']) or not 'children' in lDoc:
+				continue
+			lRemapedChild = {}
+			for cid in lDoc['children']:
+				lChild = lDoc['children'][cid]
+				if not 'psconverter:badxform' in lChild:
+					continue
+				# create a link metadata if there is not
+				lLinkMd = None
+				if not lChild['hasmetadata']:
+					lLinkMd = {
+						"id":str(uuid.uuid4()),
+						"type":"linkmetadata",
+						"ts": lTs
+					}
+					lNewLinkMdDocs[lLinkMd['id']] = lLinkMd
+					lRemapedChild[cid] = lLinkMd['id']
+					lChild['hasmetadata'] = True
+				else:
+					lLinkMd = pDocsMap[cid]
+				if not 'metadata' in lLinkMd:
+					lLinkMd['metadata'] = {}
+				lLinkMd['metadata']['bad_xform'] = lChild['psconverter:badxform']
+				del lChild['psconverter:badxform']
+			
+			for cid in lRemapedChild:
+				lDoc['children'][lRemapedChild[cid]] = lDoc['children'][cid]
+				del lDoc['children'][cid]
+		for k in lNewLinkMdDocs:
+			pDocsMap[k] = lNewLinkMdDocs[k]
+
 	# this method will remove a group of metadata if they are all set to the default value
 	# pGroupOfDefaultValues is an array of group {'key1':'defaultval1','key2':'defaultval2',...}
 	def helperRemoveGroupOfDefaultValues(self, pMdObject, pGroupOfDefaultValues):
@@ -356,15 +402,22 @@ class FileSystemXRefResolver(XRefResolverInteface):
 		self.__mBaseDir = pBaseDir
 		
 		lCptr = 0
+		lCacheIsValid = False
 		if (not pCacheFile is None) and os.path.isfile(pCacheFile) and (os.stat(pBaseDir).st_mtime < os.stat(pCacheFile).st_mtime):
-			self.__mLogger.info('FileSystemXRefResolver load index of %s from cache %s ' % (pBaseDir,pCacheFile))
-
+			lCacheContent = {}
 			with open(pCacheFile,'r') as f:
-				self.__mFilePathMap = json.load(f)
-			for f in self.__mFilePathMap:
-				lCptr = lCptr + len(self.__mFilePathMap[f])
-		else:
+				lCacheContent = json.load(f)
+			if not 'sourcefolder' in lCacheContent or lCacheContent['sourcefolder'] != pBaseDir:
+				self.__mLogger.warn('FileSystemXRefResolver cache file was build from an other base dir, rebuild it')
+			else:
+				self.__mFilePathMap = lCacheContent['files']
+				lCacheIsValid = True
+				self.__mLogger.info('FileSystemXRefResolver load index of %s from cache %s ' % (pBaseDir,pCacheFile))
+				for f in self.__mFilePathMap:
+					lCptr = lCptr + len(self.__mFilePathMap[f])
+				
 			
+		if not lCacheIsValid:
 			self.__mLogger.info('FileSystemXRefResolver start indexing ' + pBaseDir)
 			for (dirpath, dirnames, filenames) in os.walk(self.__mBaseDir):
 				lCptrStart = lCptr
@@ -372,7 +425,7 @@ class FileSystemXRefResolver(XRefResolverInteface):
 					lFullFilePath = os.path.join(dirpath,lFile)
 					lRelativePath = self.__normalizePath(lFullFilePath)
 					lExt = os.path.splitext(lFullFilePath)[1].lower()
-					if lExt in ['.catproduct','.jt','.catpart','.cgr','.model','.fbx','.obj','.plmxml']:
+					if lExt in ['.catproduct','.jt','.catpart','.cgr','.model','.fbx','.obj','.gltf','.plmxml','.vrml','.wrl','.wrz']:
 						lFileName = os.path.basename(lFullFilePath)
 						if lFileName in self.__mFilePathMap:
 							self.__mFilePathMap[lFileName].append((lRelativePath,os.path.getsize(lFullFilePath)))
@@ -387,7 +440,11 @@ class FileSystemXRefResolver(XRefResolverInteface):
 				if not os.path.isdir(os.path.dirname(pCacheFile)):
 					os.makedirs(os.path.dirname(pCacheFile))
 				with open(pCacheFile,'w') as f:
-					json.dump(self.__mFilePathMap,f,sort_keys=True,indent='\t')
+					lCacheContent = {
+						'files':self.__mFilePathMap,
+						'sourcefolder': pBaseDir
+					}
+					json.dump(lCacheContent,f,sort_keys=True,indent='\t')
 		self.__mLogger.info('FileSystemXRefResolver is ready with %d files ' % (lCptr) )
 
 	def __iter__(self):
@@ -635,7 +692,7 @@ class Converter3dji:
 	def getProjectProperties(self):
 		return self.__mProjectProperties
 
-	def getDefaultBuildParameters(self):
+	def getDefaultBuildParameters(self, pScaleFactorToMillimeters = 1.):
 		lServerCap = self.__mServerAdapter.getServerCapabilities()
 		lRamCount = lServerCap['ram_quantity_bytes'] / (1024*1024)
 		lRamLimit = 2048
@@ -659,27 +716,27 @@ class Converter3dji:
 				},
 				"defaultgeometrysettings" : {
 					"sourcer" : "defaultsourcer",
-					"connexitythreshold" : 2,
+					"connexitythreshold" : 2 * pScaleFactorToMillimeters,
 					"backfaceculling":"ccw",
-					"visibilityvoxelizationstep" : 175,
-					"dynamiclowdefvoxelizationstep" : 50,
+					"visibilityvoxelizationstep" : 175 * pScaleFactorToMillimeters,
+					"dynamiclowdefvoxelizationstep" : 50 * pScaleFactorToMillimeters,
 					"maxvoxelcount" : 200000,
 					"allowstaticlowdef" : True,
 					"allowdynamiclowdef" : True,
-					"minobjsizeforstaticlowdef" : 300,
-					"minobjsizefordynamiclowdef" : 175,
+					"minobjsizeforstaticlowdef" : 300 * pScaleFactorToMillimeters,
+					"minobjsizefordynamiclowdef" : 175 * pScaleFactorToMillimeters,
 					"minheuristicfordynamiclowdef" : 0.6,
 					"minheuristictoprioritizedynamiclowdef" : 0.98,
 					"subpartlevel":"body",
 					"etag":None
 				},
 				"xformtolerance" : {
-					"translation" : 0.01,
+					"translation" : 0.01 * pScaleFactorToMillimeters,
 					"rotation" : 0.001
 				},
 				"lowdeftrlcount" : 1000000,
 				"buildcomment" : "Build comment",
-				"visiblersets" : [10000, 20000],
+				"visiblersets" : [10000],
 				"modelaabblimit" : {
 					"xmin" : -3.3e38,
 					"xmax" : 3.3e38,
