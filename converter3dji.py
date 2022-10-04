@@ -501,7 +501,109 @@ class FileSystemXRefResolver(XRefResolverInteface):
 
 
 
+########################################
+#
+# internal class used to aggregate metadata types
+# and propose a default mapping
+#
+########################################
+class MetadataTypeMapping:
+	def __init__(self, pLogger) -> None:
+		self.__mMdTypes = {}
+		self.__mLogger = pLogger
+	
+	def addMetadataBlock(self, pMdBlock):
+		self.__recurseOnMd(pMdBlock,[],'')
+	
+	def __addType(self, pPath, pType):
+		lPath = '.'.join(pPath)
+		if not lPath in self.__mMdTypes:
+			self.__mMdTypes[lPath] = set()
+		self.__mMdTypes[lPath].add(pType)
 
+	def __recurseOnMd(self, pMd, pPath, pTypePrefix):
+		if type(pMd) is dict:
+			self.__addType(pPath,pTypePrefix+'object')
+			for k in pMd:
+				self.__recurseOnMd(pMd[k],pPath + [k],'')
+		elif type(pMd) is str:
+			if 'date' in pPath[-1].lower():
+				self.__addType(pPath,pTypePrefix+'date')
+			else:
+				self.__addType(pPath,pTypePrefix+'text')
+		elif type(pMd) is int:
+			self.__addType(pPath,pTypePrefix+'integer')
+		elif type(pMd) is float:
+			self.__addType(pPath,pTypePrefix+'double')
+		elif type(pMd) is list:
+			for e in pMd:
+				self.__recurseOnMd(e,pPath,pTypePrefix+'list_of_')
+		else:
+			raise Exception('Unhandled mapping type %s' % (self.__mAllMdKeys[k]))
+	
+	def getMapping(self):
+		self.__mLogger.info('About to create mapping from %s' % self.__mMdTypes)
+		lStr = 'Found metadata keys :'
+		lRootProperties = {}
+		for k in sorted(self.__mMdTypes.keys()):
+			if k == '':
+				continue
+			lPath = k.split('.')
+			if len(self.__mMdTypes[k]) != 1:
+				self.__mLogger.warn('detect several types for metadata %s : %s' % (k,self.__mMdTypes[k]))
+				continue
+			lType = list(self.__mMdTypes[k])[0]
+			lStr = lStr + '\n\t%s : %s' % (k,lType)
+			if lType in ['text','list_of_text','integer','list_of_integer','double','list_of_double','date','list_of_date','object']:
+				# this is a basic type
+				self.__createMappingEntry(lRootProperties,lPath,lType.replace('list_of_',''),lPath)
+			elif lType == 'list_of_object':
+				self.__createMappingEntry(lRootProperties,lPath,'nested',lPath)
+			else:
+				self.__mLogger.warn('unhandled metadata type %s : %s' % (k,lType))
+				continue
+		lProposedMapping = {
+			"id": "com.3djuump:indexmapping",
+			"type": "projectdocument",
+			"subtype": "indexmapping",
+			"version": "9.1",
+			"metadatamapping":{
+				"dynamic":False,
+				"properties":lRootProperties
+			},
+			"dynamic_templates": [
+			],
+			"ts": 1
+		}
+		lStr = lStr + "\nproposed mapping : " + json.dumps(lProposedMapping)
+		if len(self.__mMdTypes) > 128:
+			self.__mLogger.warn('detect a huge number of metadata keys, you might have indexing issues, consider reducing it')
+
+		self.__mLogger.info(lStr)
+		return lProposedMapping
+
+	def __createMappingEntry(self,pMapping, pPath, pType, pFullPath):
+		if not pPath[0] in pMapping:
+			pMapping[pPath[0]] = {}
+		lDstObj = pMapping[pPath[0]]
+		if len(pPath) > 1:
+			if not 'properties' in lDstObj:
+				if 'type' in lDstObj and not lDstObj['type'] in ['nested','object']:
+					self.__mLogger.warn('fail to create mapping entry for %s, missing properties field for %s' % (pFullPath,pPath[0]))
+					return
+				lDstObj['properties'] = {}
+			self.__createMappingEntry(lDstObj['properties'],pPath[1:],pType,pFullPath)
+		else:
+			if not 'type' in lDstObj:
+				lDstObj['type'] = pType
+				if pType == 'date':
+					lDstObj['ignore_malformed'] = True
+					lDstObj['format'] = "date_optional_time||dd/MM/yyyy"
+				elif pType in ['nested','object']:
+					lDstObj['dynamic'] = False
+			elif lDstObj['type'] != pType:
+				self.__mLogger.warn('fail to create mapping entry for %s, type conflict' % (pFullPath))
+				return
 
 
 ########################################
@@ -543,7 +645,7 @@ class Converter3dji:
 		self.__mAllProcessedFiles = set()
 		self.__mPotentialRootFiles = set()
 		self.__mServerAdapter = _ServerAdapter(pParam,pLogger)
-		self.__mAllMdKeys = dict()
+		self.__mAllMdKeys = MetadataTypeMapping(pLogger)
 		self.__mFilesToPush = dict()
 		self.__mGotUpdateLock = False
 		self.__mProjectProperties = None
@@ -589,39 +691,7 @@ class Converter3dji:
 		self.__mServerAdapter.setProjectStatus('idle',None)
 		self.__mGotUpdateLock = False
 		
-		lStr = 'Found metadata keys :'
-		lProposedMapping = {
-			"metadatamapping":{
-				"dynamic":False,
-				"properties":{
-
-				}
-			}
-		}
-		for k in sorted(self.__mAllMdKeys.keys()):
-			lMappingType = "text"
-			if len(self.__mAllMdKeys[k]) > 1:
-				self.__mLogger.warn('detect several types for metadata %s : %s' % (k,self.__mAllMdKeys[k]))
-			elif list(self.__mAllMdKeys[k])[0] is str:
-				lMappingType = "text"
-			elif list(self.__mAllMdKeys[k])[0] is int:
-				lMappingType = "integer"
-			elif list(self.__mAllMdKeys[k])[0] is float:
-				lMappingType = "double"
-			elif list(self.__mAllMdKeys[k])[0] is list:
-				lMappingType = "nested"
-			elif list(self.__mAllMdKeys[k])[0] is dict:
-				lMappingType = "object"
-			else:
-				raise Exception('Unhandled mapping type %s' % (self.__mAllMdKeys[k]))
-
-			lProposedMapping["metadatamapping"]["properties"][k] = {"type":lMappingType}
-			lStr = lStr + '\n\t%s : %s' % (k,self.__mAllMdKeys[k])
-		lStr = lStr + "\nproposed mapping : " + json.dumps(lProposedMapping)
-		if len(self.__mAllMdKeys) > 128:
-			self.__mLogger.warn('detect a huge number of metadata keys, you might have indexing issues, consider reducing it')
-
-		self.__mLogger.info(lStr)
+		self.__mAllMdKeys.getMapping()
 		
 		
 	# this method will remove from cache all convresults that contains errors
@@ -830,9 +900,17 @@ class Converter3dji:
 							lNeedToReprocess = True
 						else:
 							if self.__mParam.reprocessDocFromCache :
-								self._callPsCustomizer(lConvResult,lFileHash,lBatchEntry,lConvResult['infos']['ts'],True)
-								with open(lConvResultFile,'w') as of:
-									json.dump(lConvResult,of,indent=4)
+								# load initial convresult
+								lConvResult = self._loadJsonFile(lConvResultFile + '.bak')
+								if len(lConvResult) == 0:
+									self.__mLogger.warning('need to reprocess %s, convresult.back is empty' % (lConvResultFile))
+									# if previous conversion was halted some convresult files could be corrupted
+									lNeedToReprocess = True
+								else:
+									self._callPsCustomizer(lConvResult,lFileHash,lBatchEntry,lConvResult['infos']['ts'],True)
+									with open(lConvResultFile,'w') as of:
+										json.dump(lConvResult,of,indent=4)
+						if not lNeedToReprocess:
 							self._analyzeconvresult(lBatchEntry,lFileHash,lCacheFolder,lConvResult)
 					
 					if lNeedToReprocess:
@@ -899,6 +977,10 @@ class Converter3dji:
 						lGeometryDocs.append(lGeometryDoc)
 				lConvResult['docs'] = lConvResult['docs'] + lGeometryDocs
 				
+				# save a backup prior to first customization
+				# re-save convresult it might have been modified by ps converter
+				with open(lConvResultFile + '.bak','w') as of:
+					json.dump(lConvResult,of,indent=4)
 				
 				self._callPsCustomizer(lConvResult,lFileHash,c['file'],lConvResult['infos']['ts'])
 				
@@ -1049,9 +1131,7 @@ class Converter3dji:
 				self.mFilesToPush[lFileName] = os.path.join(pCacheFolder,lFileName)
 			elif lDoc['type'] in ['partmetadata','linkmetadata','instancemetadata'] and 'metadata' in lDoc:
 				for k in lDoc['metadata']:
-					if not k in self.__mAllMdKeys:
-						self.__mAllMdKeys[k] = set()
-					self.__mAllMdKeys[k].add(type(lDoc['metadata'][k]))
+					self.__mAllMdKeys.addMetadataBlock(lDoc['metadata'])
 			self.__mServerAdapter.addDocument(lFinalDoc)
 		lXRefsSet = set(lXRefs.keys())
 		for k in ( lXRefsSet - self.__mAllProcessedFiles):
